@@ -36,7 +36,7 @@ func TestCoordinatorInOrderCommit(t *testing.T) {
 	defer cancel()
 	mc := &mockCommitter{}
 	gate := NewGate(true)
-	l := newTestLogger()
+	l := newNopLogger()
 	coord := NewCoordinatorWithProcessor("topicA", mc, gate, cancel, nil, 10*time.Millisecond, 50*time.Millisecond, l, func(error) bool { return false })
 	// starting offsets
 	coord.SetStartOffset(0, 10)
@@ -68,7 +68,7 @@ func TestCoordinatorPausePredicateRetry(t *testing.T) {
 	defer cancel()
 	mc := &mockCommitter{}
 	gate := NewGate(true)
-	l := newTestLogger()
+	l := newNopLogger()
 	pErr := pauseErrType{"pause"}
 	attempts := 0
 	processFn := func(ctx context.Context, msg kafka.Message) error {
@@ -100,7 +100,7 @@ func TestCoordinatorNonPausingErrorIsCommitted(t *testing.T) {
 	defer cancel()
 	mc := &mockCommitter{}
 	gate := NewGate(true)
-	l := newTestLogger()
+	l := newNopLogger()
 	nonPause := errors.New("non-pause")
 	coord := NewCoordinatorWithProcessor("topicC", mc, gate, cancel, nil, 5*time.Millisecond, 20*time.Millisecond, l, func(error) bool { return false })
 	coord.SetStartOffset(0, 5)

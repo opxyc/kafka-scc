@@ -57,3 +57,19 @@ func TIDFromCtx(ctx context.Context) string {
 	}
 	return ""
 }
+
+type nopLogger struct{}
+
+// Returns a struct which implements the Logger interface.
+// Note: It logs nothing.
+func newNopLogger() Logger {
+	return &nopLogger{}
+}
+
+func (l *nopLogger) With(args ...any) Logger {
+	return l
+}
+
+func (l *nopLogger) Info(msg string, args ...any) {}
+
+func (l *nopLogger) Error(msg string, args ...any) {}

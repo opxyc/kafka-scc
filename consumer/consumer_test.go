@@ -28,7 +28,7 @@ func TestTopicConsumer_ShutdownWhileFetching(t *testing.T) {
 	// empty msgs -> FetchMessage will block until ctx done
 	mr := &mockReader{msgs: []kafka.Message{}}
 	gate := NewGate(true)
-	l := newTestLogger()
+	l := newNopLogger()
 	c := &Consumer{
 		topic:        "t",
 		handler:      &mockHandler{},
@@ -62,7 +62,7 @@ func TestTopicConsumer_ConcurrentStopDuringConsume(t *testing.T) {
 	msgs := []kafka.Message{{Partition: 0, Offset: 1}}
 	mr := &mockReader{msgs: msgs}
 	gate := NewGate(true)
-	l := newTestLogger()
+	l := newNopLogger()
 	c := &Consumer{
 		topic:        "t",
 		handler:      &mockHandler{},
@@ -93,7 +93,7 @@ func TestTopicConsumer_NilPausePredicate_DoesNotPauseOrStop(t *testing.T) {
 	// handler returns an error
 	errHandler := &pauseOnceHandler{err: errors.New("any")}
 	gate := NewGate(true)
-	l := newTestLogger()
+	l := newNopLogger()
 	c := &Consumer{
 		topic:        "t",
 		handler:      errHandler,
@@ -129,7 +129,7 @@ func TestTopicConsumer_FetchLoopStopsOnCoordinatorSignal(t *testing.T) {
 	msgs := []kafka.Message{{Partition: 0, Offset: 1}}
 	mr := &commitErrReader{mockReader: mockReader{msgs: msgs}}
 	gate := NewGate(true)
-	l := newTestLogger()
+	l := newNopLogger()
 	c := &Consumer{
 		topic:        "t",
 		handler:      &mockHandler{},
@@ -158,7 +158,7 @@ func TestTopicConsumer_WorkersProcessConcurrently(t *testing.T) {
 	msgs := []kafka.Message{{Partition: 0, Offset: 1}, {Partition: 0, Offset: 2}}
 	mr := &mockReader{msgs: msgs}
 	gate := NewGate(true)
-	l := newTestLogger()
+	l := newNopLogger()
 	startCh := make(chan struct{})
 	doneCh := make(chan struct{}, 2)
 	// handler that simulates work and signals done
@@ -234,7 +234,7 @@ func TestTopicConsumer_GateBlocksUntilHealthy(t *testing.T) {
 	}
 	mr := &mockReader{msgs: msgs}
 	gate := NewGate(false) // start unhealthy
-	l := newTestLogger()
+	l := newNopLogger()
 	c := &Consumer{
 		topic:        "t",
 		handler:      &mockHandler{},
@@ -354,7 +354,7 @@ func TestTopicConsumer_NonPausingErrorsAreCommitted(t *testing.T) {
 	mr := &mockReader{msgs: msgs}
 	mh := &mockHandler{}
 	gate := NewGate(true)
-	log := newTestLogger()
+	log := newNopLogger()
 
 	c := &Consumer{
 		topic:        "t",
@@ -401,7 +401,7 @@ func TestTopicConsumer_PausePredicateRetriesThenCommits(t *testing.T) {
 	pauseErr := errors.New("pause")
 	mh := &pauseOnceHandler{err: pauseErr}
 	gate := NewGate(true)
-	log := newTestLogger()
+	log := newNopLogger()
 
 	c := &Consumer{
 		topic:        "t",

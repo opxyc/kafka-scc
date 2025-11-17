@@ -2,7 +2,6 @@ package consumer
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -31,7 +30,7 @@ type Consumer struct {
 }
 
 // New creates a new consumer.
-func New(brokers []string, groupID string, topic string, h MessageHandler, gate *Gate, workerCount int, backoffBase time.Duration, backoffMax time.Duration, log Logger, decider PausePredicate) (*Consumer, error) {
+func New(brokers []string, groupID string, topic string, h MessageHandler, gate *Gate, workerCount int, backoffBase time.Duration, backoffMax time.Duration, log Logger, decider PausePredicate) *Consumer {
 	// If the handler implements the TopicSetter interface, set the topic
 	if ts, ok := h.(TopicSetter); ok {
 		ts.SetTopic(topic)
@@ -42,7 +41,7 @@ func New(brokers []string, groupID string, topic string, h MessageHandler, gate 
 	}
 
 	if log == nil {
-		return nil, errors.New("missing logger")
+		log = newNopLogger()
 	}
 
 	if decider == nil {
@@ -61,7 +60,7 @@ func New(brokers []string, groupID string, topic string, h MessageHandler, gate 
 		backoffMax:    backoffMax,
 		log:           log.With("component", "consumer", "topic", topic),
 		pauseDecider:  decider,
-	}, nil
+	}
 }
 
 // Start begins consuming messages
