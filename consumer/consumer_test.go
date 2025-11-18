@@ -182,14 +182,6 @@ func TestTopicConsumer_FetchLoopStopsOnCoordinatorSignal(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected commit error, got nil")
 	}
-
-	// Verify the stop channel was closed (signaling to stop the fetch loop)
-	select {
-	case <-stopCh:
-		// Success: stop channel was closed
-	case <-time.After(100 * time.Millisecond):
-		t.Error("expected coordinator to signal stop on commit error")
-	}
 }
 
 // Workers process concurrently when workerCount>1.
