@@ -159,17 +159,26 @@ func (c *Consumer) startWorkers(ctx context.Context, workers *sync.WaitGroup, jo
 						return
 					}
 
-					// attach trace_id to processing context
-					procCtx := withTraceID(ctx, traceID(c.topic, j.msg))
-					// Run the actual business handler. The handler itself is responsible
-					// for calling the external API and must return api.ErrUnavailable
-					// when the API is down so the coordinator can retry/backoff.
-					err := c.handler.Handle(procCtx, j.msg.Value)
-					if c.pauseDecider != nil && c.pauseDecider(err) && c.gate != nil {
-						// Flip the gate to unhealthy to pause new fetches during retry
-						c.gate.SetHealthy(false)
-					}
-					results <- result{msg: j.msg, err: err}
+					func() {
+						defer func() {
+							if r := recover(); r != nil {
+								c.log.Error("handler panicked", "error", r, "topic", c.topic, "partition", j.msg.Partition, "offset", j.msg.Offset)
+								results <- result{msg: j.msg, err: fmt.Errorf("handler panicked: %v", r)}
+							}
+						}()
+
+						// attach trace_id to processing context
+						procCtx := withTraceID(ctx, traceID(c.topic, j.msg))
+						// Run the actual business handler. The handler itself is responsible
+						// for calling the external API and must return api.ErrUnavailable
+						// when the API is down so the coordinator can retry/backoff.
+						err := c.handler.Handle(procCtx, j.msg.Value)
+						if c.pauseDecider != nil && c.pauseDecider(err) && c.gate != nil {
+							// Flip the gate to unhealthy to pause new fetches during retry
+							c.gate.SetHealthy(false)
+						}
+						results <- result{msg: j.msg, err: err}
+					}()
 				}
 			}
 		}(i)

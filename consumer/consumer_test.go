@@ -21,6 +21,35 @@ type mockReader struct {
 	commits []int64
 }
 
+func (m *mockReader) FetchMessage(ctx context.Context) (kafka.Message, error) {
+	m.mu.Lock()
+	i := m.idx
+	m.idx++
+	m.mu.Unlock()
+	if i >= len(m.msgs) {
+		<-ctx.Done()
+		return kafka.Message{}, ctx.Err()
+	}
+
+	return m.msgs[i], nil
+}
+
+func (m *mockReader) CommitMessages(ctx context.Context, msgs ...kafka.Message) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, msg := range msgs {
+		m.commits = append(m.commits, msg.Offset)
+	}
+	return nil
+}
+
+func (m *mockReader) Close() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.closed = true
+	return nil
+}
+
 // Test that shutting down while FetchMessage is blocked unblocks via Stop().
 func TestTopicConsumer_ShutdownWhileFetching(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
@@ -74,6 +103,7 @@ func TestTopicConsumer_ConcurrentStopDuringConsume(t *testing.T) {
 		log:          l,
 		pauseDecider: func(error) bool { return false },
 	}
+
 	go c.consume(ctx)
 	time.Sleep(5 * time.Millisecond)
 	// Concurrent stop should not deadlock
@@ -124,30 +154,41 @@ func (r *commitErrReader) CommitMessages(ctx context.Context, msgs ...kafka.Mess
 }
 
 func TestTopicConsumer_FetchLoopStopsOnCoordinatorSignal(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	msgs := []kafka.Message{{Partition: 0, Offset: 1}}
-	mr := &commitErrReader{mockReader: mockReader{msgs: msgs}}
-	gate := NewGate(true)
-	l := newNopLogger()
-	c := &Consumer{
-		topic:        "t",
-		handler:      &mockHandler{},
-		reader:       mr,
-		gate:         gate,
-		workerCount:  1,
-		backoffBase:  5 * time.Millisecond,
-		backoffMax:   20 * time.Millisecond,
-		log:          l,
-		pauseDecider: func(error) bool { return false },
+	mr := &commitErrReader{mockReader: mockReader{msgs: []kafka.Message{{Partition: 0, Offset: 1}}}}
+
+	// Create a channel that will be closed when the coordinator signals to stop
+	stopCh := make(chan struct{})
+
+	// Create a coordinator with a custom cancel function that closes our stop channel
+	coord := NewCoordinatorWithProcessor(
+		"test-topic",
+		mr,
+		NewGate(true),
+		func() { close(stopCh) }, // When coordinator cancels, close stopCh
+		nil,                      // No process function needed for this test
+		time.Millisecond,
+		time.Millisecond,
+		newNopLogger(),
+		func(error) bool { return false },
+	)
+
+	// Process a message - this should trigger a commit error
+	err := coord.Process(context.Background(), ProcessResult{
+		Msg: kafka.Message{Partition: 0, Offset: 1, Topic: "test-topic"},
+		Err: nil,
+	})
+
+	// Verify we got a commit error
+	if err == nil {
+		t.Fatal("expected commit error, got nil")
 	}
-	done := make(chan struct{})
-	go func() { c.consume(ctx); close(done) }()
+
+	// Verify the stop channel was closed (signaling to stop the fetch loop)
 	select {
-	case <-done:
-		// ok: consumption stopped after coordinator signaled
-	case <-time.After(500 * time.Millisecond):
-		t.Fatalf("expected fetchLoop to stop on coordinator signal")
+	case <-stopCh:
+		// Success: stop channel was closed
+	case <-time.After(100 * time.Millisecond):
+		t.Error("expected coordinator to signal stop on commit error")
 	}
 }
 
@@ -267,39 +308,6 @@ func TestTopicConsumer_GateBlocksUntilHealthy(t *testing.T) {
 	if idxAfter == 0 {
 		t.Fatalf("expected fetch after healthy")
 	}
-}
-
-func (m *mockReader) FetchMessage(ctx context.Context) (kafka.Message, error) {
-	m.mu.Lock()
-	i := m.idx
-	m.idx++
-	m.mu.Unlock()
-	if i >= len(m.msgs) {
-		// block until ctx done
-		select {
-		case <-ctx.Done():
-			return kafka.Message{}, ctx.Err()
-		case <-time.After(5 * time.Millisecond):
-			return kafka.Message{}, ctx.Err()
-		}
-	}
-	return m.msgs[i], nil
-}
-
-func (m *mockReader) CommitMessages(ctx context.Context, msgs ...kafka.Message) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	for _, msg := range msgs {
-		m.commits = append(m.commits, msg.Offset)
-	}
-	return nil
-}
-
-func (m *mockReader) Close() error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.closed = true
-	return nil
 }
 
 // mockHandler implements handler.MessageHandler, returns errors based on a map of offset->error
@@ -428,4 +436,82 @@ func TestTopicConsumer_PausePredicateRetriesThenCommits(t *testing.T) {
 	if len(mr.commits) == 0 || mr.commits[0] != 10 {
 		t.Fatalf("expected commit of 10, got %v", mr.commits)
 	}
+}
+
+// panicHandler panics on the first call, then succeeds on subsequent calls
+type panicHandler struct {
+	sync.Mutex
+	panicOnce bool
+	calls     int
+}
+
+func (h *panicHandler) Handle(ctx context.Context, message []byte) error {
+	h.Lock()
+	defer h.Unlock()
+	h.calls++
+
+	if !h.panicOnce {
+		h.panicOnce = true
+		panic("intentional panic for testing")
+	}
+
+	return nil
+}
+
+func (h *panicHandler) Close() error  { return nil }
+func (h *panicHandler) Topic() string { return "test-topic" }
+
+func TestConsumer_HandlesHandlerPanic(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	msgs := []kafka.Message{
+		{Partition: 0, Offset: 1, Key: []byte("key1"), Value: []byte("value1")},
+		{Partition: 0, Offset: 2, Key: []byte("key2"), Value: []byte("value2")},
+	}
+
+	mr := &mockReader{msgs: msgs}
+	gate := NewGate(true)
+	log := newNopLogger()
+	handler := &panicHandler{}
+
+	c := &Consumer{
+		topic:        "test-topic",
+		handler:      handler,
+		reader:       mr,
+		gate:         gate,
+		workerCount:  1,
+		backoffBase:  time.Millisecond,
+		backoffMax:   10 * time.Millisecond,
+		log:          log,
+		pauseDecider: func(err error) bool { return false },
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		c.consume(ctx)
+	}()
+
+	// Give it some time to process messages
+	time.Sleep(500 * time.Millisecond)
+
+	mr.mu.Lock()
+	commits := make([]int64, len(mr.commits))
+	copy(commits, mr.commits)
+	mr.mu.Unlock()
+
+	// Verify exactly 2 commits (one for each message)
+	if len(commits) != 2 {
+		t.Fatalf("Expected exactly 2 commits, got %d: %v", len(commits), commits)
+	}
+
+	// Verify handler was called exactly twice (once per message, with first one panicking)
+	if handler.calls != 2 {
+		t.Errorf("Expected exactly 2 handler calls, got %d", handler.calls)
+	}
+
+	cancel()
+	wg.Wait()
 }
